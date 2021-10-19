@@ -1,50 +1,69 @@
 using namespace std;
 
 #include <Arduino.h>
+#include <FastLED.h>
 #include <Wire.h>
-#include <SSD1306.h>            // 0,96" I2C OLED Screen from amazon
-#include <sstream>
 #include <string.h>
-#include <WiFi.h> 
-#include <HTTPClient.h>
+#include "time.h"
+#include "Adafruit_MPR121.h"
 
-#include <NTPClient.h>
-#include <WiFiUdp.h>
-
-
-#include <HTTPClient.h>
-
-String experiment_datetime;
-
-byte mac[6];
-String board_id;
-
-int ion_zero = 54;
-int ion_span = 1000;
-float ion_ppm = 0;
-String exp_name = "default";
+#include "east_face.h"
 
 
+#define NUM_LEDS 50       // How many leds in your strip?
+#define BRIGHTNESS 30      // Max 30 to keep it resonable
+#define FRAMES_PER_SECOND  72  // To keep frameRate resonable
+#define STEPS 500          // Typical animation lengh 
+#define STEPS_DELAY 10     // Typical delay to keep framerate resonable
+
+#define DATA_PIN 12 // là ou est connecté le ruban
+#define BUTTON_1 4  // Bouton relié a une digital IO, l'autre patte doit être à la masse
+#define BUTTON_2 5  // Bouton relié a une digital IO, l'autre patte doit être à la masse
+#define BUTTON_3 6  // Bouton relié a une digital IO, l'autre patte doit être à la masse
+#define BUTTON_4 7  // Bouton relié a une digital IO, l'autre patte doit être à la masse
+#define POT_1 0     // Potentiomètre (Un coté au VCC, l'autre au GND, le troisième dans un analog in
+#define POT_2 1
+#define POT_3 2
+#define POWER_LED 2 // Led utilisée pour indiquer si la luminosité est bridée par la gestion de la puissance
+#define FEEDBACK_LED 3 // Led multi-usages 
+
+// MPR121
+#ifndef _BV
+#define _BV(bit) (1 << (bit)) 
+#endif
+// Default address is 0x5A, if tied to 3.3V its 0x5B
+// If tied to SDA its 0x5C and if SCL then 0x5D
+// You can have up to 4 on one i2c bus but one is enough for testing!
+Adafruit_MPR121 cap = Adafruit_MPR121();
+
+// Keeps track of the last pins touched
+// so we know when buttons are 'released'
+uint16_t lasttouched = 0;
+uint16_t currtouched = 0;
 
 
-// Time function
-#define NTP_OFFSET  2*3600 // In seconds
-#define NTP_INTERVAL 60 * 1000    // In miliseconds
-#define NTP_ADDRESS  "2.pool.ntp.org"
+// Define the arrays of leds
+CRGB leds[NUM_LEDS];
 
-// LEDS
-#define LED_H6_R 18
-#define LED_H6_G 19
-#define LED_H6_B 23
-#define LED_H5_R 16
-#define LED_H5_G 17
-#define LED_H5_B 5
+// Triangle variable
+uint8_t triangle = 0;
+int8_t rise = 1;
 
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, NTP_ADDRESS, NTP_OFFSET, NTP_INTERVAL);
+// Game State
+int8_t game_state = 0;
 
-// SCREEN
-SSD1306Wire display(0x3c, 21, 22);
+
+// Valeurs du RGB pour une led donnée, déclarées ici comme ça elles prennent pas de la place inutilement à chaque fois qu'elles sont déclarées
+int R = 0;
+int G = 0;
+int B = 0;
+
+// Variables Globales pour le code
+uint8_t gStep = 0; //Global Step, permet aux animation de savoir où elles en sont.
+uint8_t gHue = 0;  // Global Hue (=Color) pour avoir des transitions cohérentes entre les animations.
+int gSpeed = 144;  // To keep frameRate resonable //Redondant avec un define FRAMERATE
+bool nextFlag = false;
+uint8_t currentAnimation = 0;
 
 
 // For the led blink:
@@ -54,378 +73,176 @@ unsigned long clk_baseline = 0;
 
 int ledState = LOW;
 
+// For the HMI
+int pot1, pot2, pot3, sw1, sw2, sw3, sw4, temp;
+int compteurHmi = 6;
+bool yoloFlag = false;
 
-int sentinelID = 1;
+void readHmi(){
+    pot1 = analogRead(POT_1);
+    pot2 = analogRead(POT_2);
+    pot3 = analogRead(POT_3);
+    sw1 = !digitalRead(BUTTON_1);
+    sw2 = !digitalRead(BUTTON_2);
+    sw3 = !digitalRead(BUTTON_3);
+    sw4 = !digitalRead(BUTTON_4);
+    pot1 = map(pot1, 0, 1023, 255, 0);
+    pot2 = map(pot2, 0, 1023, 255, 0);
+    pot3 = map(pot3, 0, 1023, 255, 0);
 
+    if(sw4){
+        nextFlag = true;
+    }  
 
-// sleep for 30 minutes = 1800 seconds
-uint64_t uS_TO_S_FACTOR = 1000000;  // Conversion factor for micro seconds to seconds
-uint64_t TIME_TO_SLEEP = 20;
-
-// Wifi
-const char* ssid = "Zeftow's";
-const char* password = "hey@zeftow";
-
-// Establish a Wi-Fi connection with your router
-void initWifi() {
-  Serial.print("Connecting to: "); 
-  Serial.print(ssid);
-  WiFi.begin(ssid, password);  
-
-  int timeout = 5*4; // 10 seconds
-  while(WiFi.status() != WL_CONNECTED  && (timeout-- > 0)) {
-    delay(250);
-    Serial.print(".");
-  }
-  Serial.println("");
-
-  if(WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wifi failed to connect");
-    display.clear();
-    display.setFont(ArialMT_Plain_24);
-    display.drawString(0, 00, "NO WIFI");
-    display.display();
-    delay(1000);
-    ESP.restart();
-  }
-
-  Serial.print("WiFi connected after: "); 
-  Serial.print(millis());
-  Serial.print(" ms, IP address: "); 
-  Serial.println(WiFi.localIP());
-  WiFi.macAddress(mac);
-  board_id =  String(mac[0],HEX) + String(mac[1],HEX) + String(mac[2],HEX) + String(mac[3],HEX) + String(mac[4],HEX) + String(mac[5],HEX);
-  String short_id = String(mac[3],HEX) + String(mac[4],HEX) + String(mac[5],HEX);
-  Serial.println("BoardID = " + board_id);
-  long int number = strtol(short_id.c_str(), NULL, 16);
-  Serial.print("Board number = ");
-  Serial.println(number);
-
-  switch (number) {
-  
-  case 13687848:  // 7c9ebdd0dc28
-    sentinelID = 1;
-    Serial.println("Board ID set to 1");
-    break;
-
-
-  case 13687420:  // 7c9ebdd0da7c
-    sentinelID = 2;
-    Serial.println("Board ID set to 2");
-    break;
-  
-  case 13687512:  // 7c9ebdd0dad8
-    sentinelID = 3;
-    Serial.println("Board ID set to 3");
-    break;
-
-  case 855472:  // 7c9ebdd0db00
-    sentinelID = 4;
-    Serial.println("Board ID set to 4");
-    break;
-
-  case 13687832:  // 7c9ebdd0dc18
-    sentinelID = 5;
-    Serial.println("Board ID set to 5");
-    break;
-
-  case 13687476:  // 7c9ebdd0dab4
-    sentinelID = 6;
-    Serial.println("Board ID set to 6");
-    break;
-
-  case 13687852:  // 7c9ebdd0dc2c
-    sentinelID = 7;
-    Serial.println("Board ID set to 7");
-    break;
-
-  case 13687536:  // 7c9ebdd0daf0
-    sentinelID = 8;
-    Serial.println("Board ID set to 8");
-    break;
-
-  case 13687548:  // 7c9ebdd0dafc
-    sentinelID = 9;
-    Serial.println("Board ID set to 9");
-    break;
-
-  case 13687480:  // 7c9ebdd0dab8
-    sentinelID = 10;
-    Serial.println("Board ID set to 10");
-    break;
-
-  case 13687744:  // 7c9ebdd0dbc0
-    sentinelID = 11;
-    Serial.println("Board ID set to 11");
-    break;
-
-  case 855480:  // 7c9ebdd0db8
-    sentinelID = 12;
-    Serial.println("Board ID set to 12");
-    break;
-
-  default:
-  Serial.println("Board not recognized, booting with board 1 setup");
-    break;
-  }
-}
-
-
-// GOOGLE API KEY
-// AIzaSyApj77Yh_tkz90vh85tfz8fm26A5GIF2PU
-// GET https://sheets.googleapis.com/v4/spreadsheets/1jcKjlWcNU8u_2qu-b--cxR6yGWE7y82IpwgybKaTzbg/values/uplink!A1:D5?key=AIzaSyApj77Yh_tkz90vh85tfz8fm26A5GIF2PU
-
-String getData(){
-  HTTPClient http;
-
-  String serverPath = "https://sheets.googleapis.com/v4/spreadsheets/19yixTZwU5aLfFv8h--gMTwoAbIrUOyqisNa1Kk2H1ek/values/uplink!";
-  String dataRange = "B";
-  int lineID = sentinelID + 1;
-  dataRange = dataRange + lineID + ":D" + lineID;
-  String apiKey = "?key=AIzaSyApj77Yh_tkz90vh85tfz8fm26A5GIF2PU";
-
-  // Your Domain name with URL path or IP address with path
-  String requestURL = serverPath + dataRange + apiKey;
-  http.begin(requestURL.c_str());
-
-  // Send HTTP GET request
-  int httpResponseCode = http.GET();
-  String payload;
-  if (httpResponseCode>0) {
-    Serial.print("HTTP Response code: ");
-    Serial.println(httpResponseCode);
-    payload = http.getString();
-    Serial.println(payload);
-  }
-  else {
-    Serial.print("Error code: ");
-    Serial.println(httpResponseCode);
-  }
-  // Free resources
-  http.end();
-  DynamicJsonDocument doc(1024);
-  deserializeJson(doc, payload);
-
-  ion_zero = doc["values"][0][0];
-  ion_span = doc["values"][0][1];
-  const char* _name = doc["values"][0][2];
-  exp_name = _name;
-
-  return payload;
-}
-
-
-
-/*
-{
-  "range": "uplink!A1:C1",
-  "majorDimension": "ROWS",
-  "values": [
-    [
-      "72",
-      "1234",
-      "Benzene test 2"
-    ]
-  ]
-}
-*/
-
-/*
-void update_screen(){
-  // Time management
-  if (WiFi.status() == WL_CONNECTED){
-    timeClient.update();
-  }
-  String formattedTime = timeClient.getFormattedTime();
-  // Screen display
-
-  display.clear();
-  display.setFont(ArialMT_Plain_10);
-  display.drawString(0, 0, experiment_datetime);
-
-  display.drawString(0, 14, "IonScience : " + (String)(ads_mv) + " mV");
-  display.drawString(0, 28, formattedTime);
-  display.drawString(0, 42, (String)ion_zero);
-  display.drawString(20, 42, (String)ion_span);
-  display.drawString(50, 42, exp_name);
-  display.display();
-}
-*/
-
-void update_screen(){
-  // Time management
-  if (WiFi.status() == WL_CONNECTED){
-    timeClient.update();
-  }
-  String formattedTime = timeClient.getFormattedTime();
-  // Screen display
-
-  display.clear();
-  display.setFont(ArialMT_Plain_24);
-
-  display.drawString(0, 00, "VOC : ");
-  
-  if (ion_ppm < 0) {
-    display.drawString(13, 30, "0.00 ppm");
-  } else if (ion_ppm < 10) {
-    display.drawString(13, 30, (String)ion_ppm + " ppm");
-  } else {
-    display.drawString(0, 30, (String)ion_ppm + " ppm");
-  }
-  display.display();
-}
-
-
-void led_blink(){
-  // led blink every one second to show code is running
-  if (millis() - clk_led >= 1000) {
-      // save the last time you entered the if
-      clk_led = millis();
-      // if the LED is OFF turn it ON and vice-versa:
-      if (ledState == LOW) {
-        ledState = HIGH;
-      } else {
-        ledState = LOW;
-      }
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    ledcWrite(1, !ledState*5);
-  } else {
-    ledcWrite(0, !ledState*5);
-    ledcWrite(1, 0);
-  }
-}
-
-
-void write_db(){
-  if (millis() - clk_db >= 1000) {
-    clk_db = millis();
-      // InfluxDB data push
-    sensor.clearFields();
-    sensor.addField("ads_mv", ads_mv);
-    sensor.addField("ion_ppm", ion_ppm);
-    if (!clientInflux.writePoint(sensor)) {
-      Serial.print("InfluxDB write failed: ");
-      Serial.println(clientInflux.getLastErrorMessage());
+    if(sw3){
+        compteurHmi++;
+        if(compteurHmi == 13){
+            compteurHmi = 0;
+        }
+        delay(200);
     }
-  }
-  int requesTime = millis() - clk_db;
-  Serial.println("Request time : " + (String)requesTime + " ms");
+    if(sw2){
+        compteurHmi--;
+        if(compteurHmi == -1){
+            compteurHmi = 12;
+        }
+        delay(200);
+    }
+
+    yoloFlag = sw1;
+    // Debug brightness mapping
+    // temp = map(pot1, 0, 1023, 0, 100);
+    // FastLED.setBrightness(temp); //S'occupe directement de diminuer la luminosité
+    
+    
+    /*
+    // Debug serial print
+    Serial.print("pot1 = "); Serial.print(pot1);
+    Serial.print(" | pot2 = "); Serial.print(pot2);
+    Serial.print(" | pot3 = "); Serial.print(pot3);
+    Serial.print(" | sw1 = "); Serial.print(sw1);
+    Serial.print(" | sw2 = "); Serial.print(sw2);
+    Serial.print(" | sw3 = "); Serial.println(sw3);
+    delay(200);
+    //*/
+
+  
 }
+
+
+void mapPots(int mini, int maxi){
+    pot1 = map(pot1, 0, 255, mini, maxi);
+    pot2 = map(pot2, 0, 255, mini, maxi);
+    pot3 = map(pot3, 0, 255, mini, maxi);
+}
+
+
+// PAtterns
+float w = 0;
+uint8_t phi = 0;
+
+// List of patterns to cycle through.  Each is defined as a separate function below.
+typedef void (*SimplePatternList[])();
+
+uint8_t gCurrentPatternNumber = 0; // Index number of which pattern is current
+  
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+
+
+
+void addGlitter( fract8 chanceOfGlitter) 
+{
+  if( random8() < chanceOfGlitter) {
+    leds[ random16(NUM_LEDS) ] += CRGB::White;
+  }
+}
+
+
+
+
+
+
+void standby(){
+  for( int i = 0; i < 18; i++) {
+    leds[i].setRGB(triangle, 0, triangle);
+  }
+  for( int i = 18; i < NUM_LEDS; i++) {
+    leds[i] = CRGB::Black;
+  }
+  if(millis() > 3000){
+    game_state++;
+    Serial.println("GameState incremented, exiting standby");
+  }
+}
+
+
+
+void update_triangle(){
+  if (triangle == 255){
+    rise = -1;
+  }
+  if (triangle == 0){
+    rise = 1;
+  }
+  triangle += rise;
+}
+
+SimplePatternList gPatterns = {standby, east_puzzle };
+
+void nextPattern()
+{
+  // add one to the current pattern number, and wrap around at the end
+  gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE( gPatterns);
+}
+
 
 /************************  SETUP ***************************/
 
 void setup(void) {
   Serial.begin(115200);
   Serial.println("Serial Init ok");
-  
-  display.init();
-  display.clear();
-  // int counter = 0;
-  // display.drawString(0,0, "Counter: " + String(counter));
-  // display.drawString(0,0, "Hey Dona");
-  display.display();
-  // delay(1000);
-  display.clear();
-  //display.drawString(0,0, "Congrats for the science");
-  display.drawString(0,0, "<3 sunshine :-*");
-  display.display();
+  FastLED.addLeds<WS2811,DATA_PIN,RGB>(leds, NUM_LEDS).setCorrection(TypicalPixelString);
 
-  ledcAttachPin(LED_H5_R, 0);
-  ledcAttachPin(LED_H5_G, 1);
-  ledcAttachPin(LED_H5_B, 2);
-  ledcAttachPin(LED_H6_R, 3);
-  ledcAttachPin(LED_H6_G, 4);
-  ledcAttachPin(LED_H6_B, 5);
+  // set master brightness control
+  FastLED.setBrightness(BRIGHTNESS);
 
-  ledcSetup(0, 5000, 7);
-  ledcSetup(1, 5000, 7);
-  ledcSetup(2, 5000, 7);
-  ledcSetup(3, 5000, 7);
-  ledcSetup(4, 5000, 7);
-  ledcSetup(5, 5000, 7);
-
-  for (int k=0; k<3; k++){
-    for (int i = 0; i <= 5; i++) {
-    ledcWrite(k, i);
-    ledcWrite(k+3, i);
-    delay(20);
-    }
-    for (int i = 5; i >= 0; i--) {
-      ledcWrite(k, i);
-      ledcWrite(k+3, i);
-      delay(20);
-    }
+  if (!cap.begin(0x5A)) {
+    Serial.println("MPR121 not found, check wiring?");
+    while (1);
   }
-
-
-
-  ads = Adafruit_ADS1115(0x48);
-  ads.begin();
-  ads.setGain(GAIN_ONE);
-  
-  update_ads();
-
-  initWifi();
-  delay(100);
-  getData();
-  timeClient.begin();
-  delay(100);
-  timeClient.update();
-
-
-  // Check server connection
-  if (clientInflux.validateConnection()) {
-    Serial.print("Connected to InfluxDB: ");
-    Serial.println(clientInflux.getServerUrl());
-  } else {
-    Serial.print("InfluxDB connection failed: ");
-    Serial.println(clientInflux.getLastErrorMessage());
-    ESP.restart();
-  }
-
-  //Syncing Time
-  timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
-
-  //Generating Sensor
-
-  experiment_datetime = timeClient.getFormattedDate();
-  experiment_datetime.replace("-", "/");
-  experiment_datetime.replace("T", ".");
-  experiment_datetime.replace("Z", "");
-  experiment_datetime.replace(":", "_");
-
-  Serial.println("Formatted time = "  + experiment_datetime);
-
-  sensor = Point("Sentinel_" + (String)sentinelID);
-  sensor.addTag("device", "Sentinel_"+(String)sentinelID);
-  sensor.addTag("experiment", exp_name);
-  sensor.addTag("experiment_datetime", experiment_datetime);
-
-  if (timeClient.getEpochTime() < 20000){
-    display.clear();
-    display.setFont(ArialMT_Plain_24);
-
-    display.drawString(0, 00, "NO NTP");
-    display.display();
-    delay(1000);
-    ESP.restart();
-  }
+  Serial.println("MPR121 found!");
 }
 
 
 /************************  LOOP  ***************************/
 
-
 void loop(void) {
-  // Sensors management and terminal display
-  update_ads();
+  
+  // Call the current pattern function once, updating the 'leds' array
+  gPatterns[game_state]();
 
-  // OLED display management
-  update_screen();
 
-  write_db();
+  // send the 'leds' array out to the actual LED strip
+  FastLED.show();  
+  // insert a delay to keep the framerate modest
+  FastLED.delay(1000/FRAMES_PER_SECOND); 
 
-  // Background tasks
-  // led_blink();
+  // do some periodic updates
+  EVERY_N_MILLISECONDS( 20 ) { update_triangle(); } // slowly cycle the "base color" through the rainbow
+
+  // Get the currently touched pads
+  currtouched = cap.touched();
+  
+  for (uint8_t i=0; i<12; i++) {
+    // it if *is* touched and *wasnt* touched before, alert!
+    if ((currtouched & _BV(i)) && !(lasttouched & _BV(i)) ) {
+      Serial.print(i); Serial.println(" touched");
+    }
+    // if it *was* touched and now *isnt*, alert!
+    if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
+      Serial.print(i); Serial.println(" released");
+    }
+  }
+
+  
 }

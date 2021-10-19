@@ -51,7 +51,7 @@ void readHmi(){
     /*
     // Debug serial print
     Serial.print("pot1 = "); Serial.print(pot1);
-    Serial.print(" | pot2 = "); Serial.print(pot2);
+    Serial.print(" | pot2 = "); Serial.print(pot2);v
     Serial.print(" | pot3 = "); Serial.print(pot3);
     Serial.print(" | sw1 = "); Serial.print(sw1);
     Serial.print(" | sw2 = "); Serial.print(sw2);

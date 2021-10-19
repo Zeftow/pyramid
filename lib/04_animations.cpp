@@ -55,10 +55,10 @@ for(int i=0; i<steps; i++){
         R = sin8(phi);
         G=0;
         B=0;
-        //phi += 85;
-        //G = sin8(phi);
-        // phi += 85;
-        //B = sin8(phi);
+        phi += 85;
+        G = sin8(phi);
+        phi += 85;
+        B = sin8(phi);
         leds[k].setRGB(R, G, B);
     }
     FastLED.show();
