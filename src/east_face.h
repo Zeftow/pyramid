@@ -13,7 +13,6 @@ using namespace std;
 
 extern CRGB leds[NUM_LEDS];
 extern unsigned long clk_led;
-extern uint32_t east_clock;
 
 void east_puzzle();
 

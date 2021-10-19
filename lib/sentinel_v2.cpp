@@ -216,7 +216,7 @@ String getData(){
   String dataRange = "B";
   int lineID = sentinelID + 1;
   dataRange = dataRange + lineID + ":D" + lineID;
-  String apiKey = "?key=AIzaSyApj77Yh_tkz90vh85tfz8fm26A5GIF2PU";
+  String apiKey = "";
 
   // Your Domain name with URL path or IP address with path
   String requestURL = serverPath + dataRange + apiKey;

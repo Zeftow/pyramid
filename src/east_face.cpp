@@ -64,9 +64,8 @@ bool star_state_10 = 27;
   
 
 void east_puzzle(){
-  Serial.println("Entering east puzzle");
-  east_clock = millis();
-
+  // Serial.println("Entering east puzzle");
+  return;
   for( int i = 0; i < 7; i++) { // Set this face colours to focus on this face
     leds[i].setRGB(120, 0, 170);
   }
